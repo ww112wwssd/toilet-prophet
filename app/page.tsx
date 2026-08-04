@@ -1,10 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 type Tab = "today" | "rank" | "history" | "prizes" | "mine";
 type Phase = "voting" | "waiting" | "revealed";
-type LiveRound = { id: string; episode_no: number; title: string; clue: string; voting_ends_at: string; status: string };
+type LiveRound = { id: string; episode_no: number; title: string; clue: string; voting_ends_at: string; status: string; correct_door?: number | null };
 type StoredUser = { id: string; nickname: string; avatarUrl?: string };
 type UserDetail = { user: { nickname: string; avatar_url: string; points: number; streak: number }; votes: Array<{ episode_no: number; door: number; result: string }>; awards: Array<{ name: string; rarity: string; status: string }> };
 
@@ -39,6 +39,8 @@ export default function Home() {
   const [prizeOpen, setPrizeOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [liveRound, setLiveRound] = useState<LiveRound | null>(null);
+  const [distribution, setDistribution] = useState([0, 0, 0]);
+  const [totalVotes, setTotalVotes] = useState(0);
   const [liveRanks, setLiveRanks] = useState<Array<{ nickname: string; points: number }>>([]);
   const [userDetail, setUserDetail] = useState<UserDetail | null>(null);
   const [nickname, setNickname] = useState("");
@@ -57,7 +59,7 @@ export default function Home() {
       if (nextStatus) setPhase(nextStatus);
     };
     window.addEventListener("storage", sync);
-    fetch("/api/rounds/current").then((response) => response.json()).then((payload) => { setLiveRound(payload.round ?? null); if (payload.round?.status === "revealed") setPhase("revealed"); }).catch(() => undefined);
+    fetch("/api/rounds/current").then((response) => response.json()).then((payload) => { setLiveRound(payload.round ?? null); setDistribution(payload.distribution ?? [0, 0, 0]); setTotalVotes(payload.totalVotes ?? 0); if (payload.round?.status === "revealed") setPhase("revealed"); }).catch(() => undefined);
     fetch("/api/leaderboard").then((response) => response.json()).then((payload) => setLiveRanks(payload.users ?? [])).catch(() => undefined);
     try {
       const user = JSON.parse(localStorage.getItem("tp-web-user") ?? "null") as StoredUser | null;
@@ -66,13 +68,41 @@ export default function Home() {
     return () => window.removeEventListener("storage", sync);
   }, []);
 
-  const isCorrect = voted === 2;
-  const distributions = useMemo(() => [24, 53, 23], []);
-  const displayRanks = liveRanks.length ? liveRanks.map((user) => [user.nickname.slice(0, 1), user.nickname, String(user.points)]) : ranks;
+  const isCorrect = liveRound?.correct_door != null && voted === liveRound.correct_door;
+  const displayRanks = liveRanks.map((user) => [user.nickname.slice(0, 1), user.nickname, String(user.points)]);
 
   function flash(text: string) {
     setToast(text);
     window.setTimeout(() => setToast(""), 1700);
+  }
+
+  function chooseAvatar(): Promise<string> {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return resolve("default");
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "default");
+        reader.onerror = () => resolve("default");
+        reader.readAsDataURL(file);
+      };
+      input.click();
+    });
+  }
+
+  async function changeAvatar() {
+    const user = JSON.parse(localStorage.getItem("tp-web-user") ?? "null") as StoredUser | null;
+    if (!user) return flash("请先注册");
+    const nextAvatar = await chooseAvatar();
+    if (nextAvatar === "default") return;
+    const response = await fetch(`/api/users/${user.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ avatarUrl: nextAvatar }) });
+    if (!response.ok) return flash("头像更新失败");
+    localStorage.setItem("tp-web-user", JSON.stringify({ ...user, avatarUrl: nextAvatar }));
+    setUserDetail((current) => current ? { ...current, user: { ...current.user, avatar_url: nextAvatar } } : current);
+    flash("头像已更新");
   }
 
   async function confirmVote() {
@@ -83,7 +113,8 @@ export default function Home() {
     if (!user) {
       const nickname = window.prompt("请输入你的昵称，加入厕所先知");
       if (!nickname?.trim()) return;
-      const response = await fetch("/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nickname: nickname.trim(), avatarUrl: "default" }) });
+      const pickedAvatar = await chooseAvatar();
+      const response = await fetch("/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nickname: nickname.trim(), avatarUrl: pickedAvatar }) });
       if (!response.ok) { flash("注册失败，请稍后重试"); return; }
       user = await response.json() as StoredUser;
       localStorage.setItem("tp-web-user", JSON.stringify(user));
@@ -169,7 +200,7 @@ export default function Home() {
               <div className="answer-card state-card">
                 <span className="answer-stamp">答案公开</span>
                 <small>正确答案</small>
-                <div className="big-choice"><span>02</span><b>2号门</b></div>
+                <div className="big-choice"><span>{liveRound?.correct_door ? `0${liveRound.correct_door}` : "—"}</span><b>{liveRound?.correct_door ? `${liveRound.correct_door}号门` : "答案待公布"}</b></div>
                 <div className={`verdict ${isCorrect ? "correct" : ""}`}>
                   <span>{isCorrect ? "✓" : "×"}</span>
                   <div><h1>{isCorrect ? "猜中了！" : "猜错了"}</h1><p>{isCorrect ? "积分 +10 · 获得一次抽奖机会" : "参与积分 +1 · 明天继续"}</p></div>
@@ -182,11 +213,11 @@ export default function Home() {
               </div>
 
               <section className="vote-result">
-                <div className="simple-heading"><b>最终投票比例</b><span>2,847 人参与</span></div>
+                <div className="simple-heading"><b>最终投票比例</b><span>{totalVotes ? `${totalVotes} 人参与` : "暂无投票数据"}</span></div>
                 {[1, 2, 3].map((door, index) => (
-                  <div className={door === 2 ? "answer" : ""} key={door}>
-                    <span><b>{door}号门</b><i>{distributions[index]}%</i></span>
-                    <em><strong style={{ width: `${distributions[index]}%` }} /></em>
+                  <div className={liveRound?.correct_door === door ? "answer" : ""} key={door}>
+                    <span><b>{door}号门</b><i>{distribution[index]}%</i></span>
+                    <em><strong style={{ width: `${distribution[index]}%` }} /></em>
                   </div>
                 ))}
               </section>
@@ -252,7 +283,7 @@ export default function Home() {
         <div className="screen mine-screen">
           <header className="plain-header"><small>MY PROFILE</small><h1>我的</h1></header>
           <section className="mine-card">
-            <div className="mine-avatar">{userDetail ? "我" : "?"}</div>
+            <button className="mine-avatar" onClick={() => void changeAvatar()} aria-label="更换头像">{userDetail?.user.avatar_url && userDetail.user.avatar_url !== "default" ? <img src={userDetail.user.avatar_url} alt="头像" /> : userDetail ? "我" : "?"}</button>
             <div><h2>{userDetail ? "厕所先知用户" : "还没有注册"}</h2><p>{userDetail ? "你的竞猜数据已同步" : "注册后才能投票、参与抽奖和进入排行榜"}</p></div>
           </section>
           <section className="mine-stats">
