@@ -1,12 +1,10 @@
-import { env } from "cloudflare:workers";
 import { cookies } from "next/headers";
 
 const COOKIE_NAME = "tp_admin_session";
 const SESSION_MESSAGE = "toilet-prophet-admin-session-v1";
 
 function adminPassword(): string {
-  const runtimeEnv = env as unknown as { ADMIN_PASSWORD?: string };
-  return runtimeEnv.ADMIN_PASSWORD?.trim() ?? "";
+  return process.env.ADMIN_PASSWORD?.trim() ?? "";
 }
 
 export function isAdminSessionConfigured(): boolean {

@@ -1,9 +1,7 @@
-import { env } from "cloudflare:workers";
-
 type RuntimeEnv = { DB?: D1Database };
 
 export function database(): D1Database {
-  const db = (env as unknown as RuntimeEnv).DB;
+  const db = ((globalThis as { __TP_ENV?: RuntimeEnv }).__TP_ENV ?? {}).DB;
   if (!db) throw new Error("Database binding is not configured.");
   return db;
 }
